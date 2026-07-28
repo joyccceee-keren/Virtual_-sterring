@@ -1,26 +1,18 @@
 """
-Virtual Steering Wheel
-----------------------
-Turns your two hands (tracked via webcam) into a steering wheel that
-sends A/D (or Left/Right arrow) key presses to whatever game/app has focus.
-
-Pipeline:
-  1. Webcam capture (OpenCV)
-  2. Two-hand landmark detection (MediaPipe Hands Tasks API)
-  3. Wheel angle = angle of the line between your two hands
-  4. Calibration: press 'c' to set your current hand position as "straight"
-  5. Smoothing + dead zone to avoid jitter
-  6. Output: holds 'a'/'d' (or left/right arrow) keys based on angle
+Virtual Steering Wheel with Arcade Game
+--------------------------------------
+Turns your two hands (tracked via webcam) into a steering wheel.
+Left side (640x480): Camera feed with hand skeleton tracking.
+Right side (640x480): A scrolling 2D arcade car game controlled by steering.
 
 Controls:
   c   - calibrate (set current hand angle as center/straight)
   m   - toggle output mode: keys (a/d) <-> arrows (left/right)
+  r   - restart the 2D game
   q   - quit
 
 Install dependencies first:
-  pip install opencv-python mediapipe keyboard --break-system-packages
-  (On Linux, 'keyboard' library needs root/sudo to simulate key events.
-   On Windows, run your terminal as Administrator.)
+  pip install opencv-python mediapipe keyboard numpy --break-system-packages
 """
 
 import cv2
@@ -30,6 +22,8 @@ import time
 import sys
 import os
 import urllib.request
+import random
+import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -81,6 +75,19 @@ smoothed_angle = 0.0         # filtered wheel angle relative to center
 output_mode = "keys"         # "keys" (a/d) or "arrows" (left/right)
 current_key_held = None      # tracks which key is currently pressed down
 
+# ---------------------------------------------------------------------------
+# Game State
+# ---------------------------------------------------------------------------
+game_active = True
+score = 0
+high_score = 0
+speed = 5
+player_x = 320
+player_y = 390
+obstacles = []
+last_spawn_time = 0.0
+road_scroll = 0
+
 
 def download_model_if_needed():
     if not os.path.exists(MODEL_PATH):
@@ -107,7 +114,7 @@ def draw_hand_landmarks(frame, hand_landmarks, w, h):
         py = int(lm.y * h)
         points.append((px, py))
 
-    # Draw connection lines (semi-transparent style line)
+    # Draw connection lines
     for connection in HAND_CONNECTIONS:
         start_idx, end_idx = connection
         if start_idx < len(points) and end_idx < len(points):
@@ -200,11 +207,11 @@ def draw_virtual_wheel(frame, angle_deg, calibrated):
     
     # Outer ring background (subtle grey ring)
     cv2.circle(frame, (cx, cy), radius, (60, 60, 60), 2)
-    # Glow effect (thick, lower intensity circle under the main one)
+    # Glow effect
     cv2.circle(frame, (cx, cy), radius, color, 6)
-    cv2.circle(frame, (cx, cy), radius, (255, 255, 255), 2)  # inner thin white ring
+    cv2.circle(frame, (cx, cy), radius, (255, 255, 255), 2)
 
-    # Spokes rotating with angle_deg (0 = straight up)
+    # Spokes rotating with angle_deg
     rad = math.radians(angle_deg - 90)
     for spoke_offset in (0, 120, 240):
         a = rad + math.radians(spoke_offset)
@@ -216,7 +223,7 @@ def draw_virtual_wheel(frame, angle_deg, calibrated):
     # Center hub
     cv2.circle(frame, (cx, cy), 6, (255, 255, 255), -1)
     
-    # Text overlay below the wheel with semi-transparent backing
+    # Text overlay
     lbl_w, lbl_h = 140, 30
     lbl_x, lbl_y = cx - 70, cy + radius + 15
     overlay = frame.copy()
@@ -228,8 +235,147 @@ def draw_virtual_wheel(frame, angle_deg, calibrated):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
 
+# ---------------------------------------------------------------------------
+# 2D Arcade Racing Game Logic
+# ---------------------------------------------------------------------------
+def reset_game():
+    global game_active, score, speed, player_x, obstacles, last_spawn_time
+    game_active = True
+    score = 0
+    speed = 5
+    player_x = 320
+    obstacles = []
+    last_spawn_time = time.time()
+
+
+def draw_car(canvas, cx, cy, color):
+    """Draw a top-down pixel-art style sports car."""
+    w, h = 40, 70
+    x1, y1 = cx - w//2, cy
+    x2, y2 = cx + w//2, cy + h
+    
+    # Main body
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), color, -1)
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 255), 1)
+    
+    # Roof/Windshield
+    cv2.rectangle(canvas, (x1 + 6, y1 + 20), (x2 - 6, y1 + 45), (200, 200, 200), -1)
+    # Hood lines
+    cv2.line(canvas, (x1 + 8, y1), (x1 + 8, y1 + 15), (255, 255, 255), 1)
+    cv2.line(canvas, (x2 - 8, y1), (x2 - 8, y1 + 15), (255, 255, 255), 1)
+    
+    # Wheels
+    wheel_w, wheel_h = 8, 15
+    cv2.rectangle(canvas, (x1 - wheel_w, y1 + 10), (x1, y1 + 10 + wheel_h), (30, 30, 30), -1)
+    cv2.rectangle(canvas, (x2, y1 + 10), (x2 + wheel_w, y1 + 10 + wheel_h), (30, 30, 30), -1)
+    cv2.rectangle(canvas, (x1 - wheel_w, y2 - 25), (x1, y2 - 25 + wheel_h), (30, 30, 30), -1)
+    cv2.rectangle(canvas, (x2, y2 - 25), (x2 + wheel_w, y2 - 25 + wheel_h), (30, 30, 30), -1)
+
+
+def draw_game_canvas():
+    global road_scroll, score, high_score, speed, player_x, obstacles, last_spawn_time, game_active
+
+    # Create dark empty BGR canvas
+    canvas = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # 1. Fill grass (Dark Green)
+    canvas[:, :120] = (34, 139, 34)
+    canvas[:, 520:] = (34, 139, 34)
+
+    # 2. Fill road (Grey)
+    canvas[:, 120:520] = (60, 60, 60)
+
+    # 3. Draw yellow boundaries
+    cv2.line(canvas, (120, 0), (120, 480), (0, 255, 255), 3)
+    cv2.line(canvas, (520, 0), (520, 480), (0, 255, 255), 3)
+
+    if game_active:
+        # Update road scroll
+        road_scroll = (road_scroll + speed) % 80
+
+        # Spawn obstacles
+        if len(obstacles) < 3 and (time.time() - last_spawn_time > 1.8):
+            ob_x = random.randint(145, 495)
+            ob_color = random.choice([
+                (0, 0, 255),    # Red
+                (0, 255, 255),  # Yellow
+                (255, 0, 255),  # Pink
+                (0, 165, 255)   # Orange
+            ])
+            obstacles.append({
+                "x": ob_x,
+                "y": -80,
+                "color": ob_color,
+                "speed_offset": random.uniform(-1.0, 1.5)
+            })
+            last_spawn_time = time.time()
+
+        # Update obstacles
+        active_obstacles = []
+        for ob in obstacles:
+            ob["y"] += int(speed + ob["speed_offset"])
+            if ob["y"] < 480:
+                active_obstacles.append(ob)
+            else:
+                score += 1
+                if score > high_score:
+                    high_score = score
+                if score % 5 == 0:
+                    speed = min(15, speed + 1)
+        obstacles = active_obstacles
+
+        # Check collision
+        for ob in obstacles:
+            if abs(player_x - ob["x"]) < 38 and abs(player_y - ob["y"]) < 65:
+                game_active = False
+                release_all_keys()
+
+    # Draw road dashed lines
+    for i in range(-1, 8):
+        y_pos = int((i * 80 + road_scroll) % 480)
+        cv2.line(canvas, (320, y_pos), (320, y_pos + 40), (255, 255, 255), 3)
+
+    # Draw obstacles
+    for ob in obstacles:
+        draw_car(canvas, ob["x"], ob["y"], ob["color"])
+
+    # Draw player car
+    draw_car(canvas, int(player_x), player_y, (255, 0, 0))  # Blue player car
+
+    # Draw HUD glass panel
+    g_panel_w, g_panel_h = 240, 75
+    g_overlay = canvas.copy()
+    cv2.rectangle(g_overlay, (10, 10), (10 + g_panel_w, 10 + g_panel_h), (30, 30, 30), -1)
+    cv2.rectangle(g_overlay, (10, 10), (10 + g_panel_w, 10 + g_panel_h), (80, 80, 80), 1)
+    cv2.addWeighted(g_overlay, 0.6, canvas, 0.4, 0, canvas)
+
+    cv2.putText(canvas, f"SCORE:      {score}", (25, 32), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (255, 255, 255), 2)
+    cv2.putText(canvas, f"HIGH SCORE: {high_score}", (25, 52), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (200, 200, 200), 1)
+    cv2.putText(canvas, f"SPEED:      {speed * 10} km/h", (25, 72), cv2.FONT_HERSHEY_SIMPLEX,
+                0.55, (0, 255, 255), 1)
+
+    # Game Over screen overlay
+    if not game_active:
+        go_overlay = canvas.copy()
+        cv2.rectangle(go_overlay, (0, 0), (640, 480), (10, 10, 10), -1)
+        cv2.addWeighted(go_overlay, 0.75, canvas, 0.25, 0, canvas)
+        
+        cv2.putText(canvas, "GAME OVER", (170, 200), cv2.FONT_HERSHEY_SIMPLEX,
+                    1.5, (0, 0, 255), 3)
+        cv2.putText(canvas, f"Final Score: {score}", (240, 250), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (255, 255, 255), 2)
+        cv2.putText(canvas, "Press 'R' to Restart", (210, 300), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (0, 255, 0), 2)
+        cv2.putText(canvas, "Press 'Q' to Quit", (225, 330), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (200, 200, 200), 1)
+
+    return canvas
+
+
 def main():
-    global center_offset_deg, smoothed_angle, output_mode
+    global center_offset_deg, smoothed_angle, output_mode, player_x
 
     download_model_if_needed()
 
@@ -289,10 +435,11 @@ def main():
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"[INFO] Camera opened: {w}x{h} @ ~{fps:.0f} FPS")
-    print("[INFO] Controls: 'c' = calibrate center, 'm' = toggle keys/arrows, 'q' = quit")
+    print("[INFO] Controls: 'c' = calibrate center, 'm' = toggle keys/arrows, 'r' = restart game, 'q' = quit")
 
     calibrated = False
     window_name = "Virtual Steering Wheel"
+    reset_game()
 
     while True:
         ok, frame = cap.read()
@@ -342,16 +489,27 @@ def main():
             # clamp/scale into +-100% steering feel based on FULL_LEFT/RIGHT thresholds
             send_steering_output(display_angle)
             status_text = "Tracking OK"
+
+            # LINK TO GAME CAR POSITION
+            if game_active:
+                steer_ratio = display_angle / FULL_RIGHT_DEG
+                steer_ratio = max(-1.0, min(1.0, steer_ratio))
+                target_x = 320 + steer_ratio * 180
+                player_x = player_x + 0.3 * (target_x - player_x)
         elif detected_hands_count == 1:
             smoothed_angle *= 0.9  # decay toward 0 if hands lost
             release_all_keys()
             status_text = "Only 1 hand detected (need 2)"
+            if game_active:
+                player_x = player_x + 0.1 * (320 - player_x)
         else:
             smoothed_angle *= 0.9  # decay toward 0 if hands lost
             release_all_keys()
             status_text = "Show BOTH hands to the camera"
+            if game_active:
+                player_x = player_x + 0.1 * (320 - player_x)
 
-          # Draw overlays
+        # Draw overlays on webcam frame
         draw_virtual_wheel(frame, smoothed_angle, calibrated)
         draw_hud_panel(frame, status_text, output_mode, calibrated)
 
@@ -360,7 +518,13 @@ def main():
                         (20, frame_h - 20), cv2.FONT_HERSHEY_SIMPLEX,
                         0.55, (0, 0, 255), 2)
 
-        cv2.imshow(window_name, frame)
+        # Draw 2D game canvas
+        game_canvas = draw_game_canvas()
+
+        # Combine webcam frame and game canvas side-by-side
+        display_canvas = np.hstack((frame, game_canvas))
+
+        cv2.imshow(window_name, display_canvas)
         key = cv2.waitKey(1) & 0xFF
 
         if key == ord('q'):
@@ -374,6 +538,9 @@ def main():
             output_mode = "arrows" if output_mode == "keys" else "keys"
             release_all_keys()
             print(f"[INFO] Output mode switched to: {output_mode}")
+        elif key == ord('r'):
+            reset_game()
+            print("[INFO] Game restarted.")
 
     release_all_keys()
     detector.close()
@@ -383,4 +550,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
