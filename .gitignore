@@ -1,0 +1,10 @@
+# MediaPipe model file
+hand_landmarker.task
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# IDE files
+.vscode/
+.idea/
