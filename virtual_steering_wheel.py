@@ -309,11 +309,16 @@ def main():
         results = detector.detect(mp_image)
 
         raw_angle = None
+        detected_hands_count = len(results.hand_landmarks) if results.hand_landmarks else 0
 
-        if results.hand_landmarks and len(results.hand_landmarks) == 2:
-            centers = []
+        # Draw landmarks for whatever hands are detected
+        if results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
                 draw_hand_landmarks(frame, hand_landmarks, frame_w, frame_h)
+
+        if detected_hands_count == 2:
+            centers = []
+            for hand_landmarks in results.hand_landmarks:
                 centers.append(hand_center(hand_landmarks, frame_w, frame_h))
 
             # sort so left hand (smaller x) is first, right hand second
@@ -329,8 +334,7 @@ def main():
             cv2.circle(frame, (int(x1), int(y1)), 10, (0, 255, 255), -1)
             cv2.circle(frame, (int(x2), int(y2)), 10, (0, 255, 255), -1)
 
-        status_text = "Show BOTH hands to the camera"
-        if raw_angle is not None:
+        if detected_hands_count == 2 and raw_angle is not None:
             calibrated_angle = raw_angle - center_offset_deg
             smoothed_angle = (SMOOTHING * calibrated_angle) + (1 - SMOOTHING) * smoothed_angle
             display_angle = max(-90, min(90, smoothed_angle))
@@ -338,9 +342,14 @@ def main():
             # clamp/scale into +-100% steering feel based on FULL_LEFT/RIGHT thresholds
             send_steering_output(display_angle)
             status_text = "Tracking OK"
+        elif detected_hands_count == 1:
+            smoothed_angle *= 0.9  # decay toward 0 if hands lost
+            release_all_keys()
+            status_text = "Only 1 hand detected (need 2)"
         else:
             smoothed_angle *= 0.9  # decay toward 0 if hands lost
             release_all_keys()
+            status_text = "Show BOTH hands to the camera"
 
           # Draw overlays
         draw_virtual_wheel(frame, smoothed_angle, calibrated)
