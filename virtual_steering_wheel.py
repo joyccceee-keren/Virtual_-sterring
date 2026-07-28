@@ -295,6 +295,20 @@ def draw_hud_panel(frame, status_text, output_mode, calibrated, angle_deg, curre
 # ---------------------------------------------------------------------------
 # Pygame Racetrack & Car Graphics (Right Side)
 # ---------------------------------------------------------------------------
+def reset_game():
+    global game_active, speed, target_speed, rpm, player_x, obstacles, last_spawn_time, lap_start_time, current_lap_time, actual_distance_this_lap
+    game_active = True
+    speed = 0.0
+    target_speed = 0.0
+    rpm = 4000.0
+    player_x = 320.0
+    obstacles = []
+    last_spawn_time = time.time()
+    lap_start_time = time.time()
+    current_lap_time = 0.0
+    actual_distance_this_lap = 0.0
+
+
 def pygame_draw_f1_car(surface, cx, cy, color, is_player=False):
     """Draw a detailed top-down open-wheel F1 car silhouette."""
     w, h = 44, 80
