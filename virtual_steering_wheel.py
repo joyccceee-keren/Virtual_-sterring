@@ -24,6 +24,8 @@ import urllib.request
 import random
 import numpy as np
 import pygame
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 try:
     import keyboard
