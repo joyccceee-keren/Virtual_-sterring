@@ -606,7 +606,7 @@ def main():
     font_medium = pygame.font.Font(None, 24)
     font_small = pygame.font.Font(None, 18)
     
-    pygame_clock = pygame.clock.Clock()
+    pygame_clock = pygame.time.Clock()
 
     # Setup MediaPipe detector
     base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
