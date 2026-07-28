@@ -248,28 +248,91 @@ def reset_game():
     last_spawn_time = time.time()
 
 
-def draw_car(canvas, cx, cy, color):
-    """Draw a top-down pixel-art style sports car."""
-    w, h = 40, 70
+def draw_car(canvas, cx, cy, color, is_player=False):
+    """Draw a highly detailed top-down realistic sports car."""
+    w, h = 42, 80
     x1, y1 = cx - w//2, cy
     x2, y2 = cx + w//2, cy + h
-    
-    # Main body
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), color, -1)
-    cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 255), 1)
-    
-    # Roof/Windshield
-    cv2.rectangle(canvas, (x1 + 6, y1 + 20), (x2 - 6, y1 + 45), (200, 200, 200), -1)
-    # Hood lines
-    cv2.line(canvas, (x1 + 8, y1), (x1 + 8, y1 + 15), (255, 255, 255), 1)
-    cv2.line(canvas, (x2 - 8, y1), (x2 - 8, y1 + 15), (255, 255, 255), 1)
-    
-    # Wheels
-    wheel_w, wheel_h = 8, 15
-    cv2.rectangle(canvas, (x1 - wheel_w, y1 + 10), (x1, y1 + 10 + wheel_h), (30, 30, 30), -1)
-    cv2.rectangle(canvas, (x2, y1 + 10), (x2 + wheel_w, y1 + 10 + wheel_h), (30, 30, 30), -1)
-    cv2.rectangle(canvas, (x1 - wheel_w, y2 - 25), (x1, y2 - 25 + wheel_h), (30, 30, 30), -1)
-    cv2.rectangle(canvas, (x2, y2 - 25), (x2 + wheel_w, y2 - 25 + wheel_h), (30, 30, 30), -1)
+
+    # 1. Wheels (4 dark wheels with silver rims/axles)
+    wheel_w, wheel_h = 7, 18
+    wheels_y = [y1 + 10, y2 - 28]
+    for wy in wheels_y:
+        # Left wheel
+        cv2.rectangle(canvas, (x1 - wheel_w, wy), (x1, wy + wheel_h), (25, 25, 25), -1)
+        cv2.circle(canvas, (x1 - wheel_w//2, wy + wheel_h//2), 2, (150, 150, 150), -1)
+        # Right wheel
+        cv2.rectangle(canvas, (x2, wy), (x2 + wheel_w, wy + wheel_h), (25, 25, 25), -1)
+        cv2.circle(canvas, (x2 + wheel_w//2, wy + wheel_h//2), 2, (150, 150, 150), -1)
+
+    # 2. Main Aerodynamic Car Body (curved front and back)
+    pts = np.array([
+        [cx - 10, y1],          # Nose center left
+        [cx + 10, y1],          # Nose center right
+        [x2 - 2, y1 + 15],      # Front right wing
+        [x2, y1 + 35],          # Mid right
+        [x2 - 1, y2 - 10],      # Rear right wing
+        [x2 - 5, y2],           # Tail right
+        [x1 + 5, y2],           # Tail left
+        [x1 + 1, y2 - 10],      # Rear left wing
+        [x1, y1 + 35],          # Mid left
+        [x1 + 2, y1 + 15]       # Front left wing
+    ], np.int32)
+    cv2.fillPoly(canvas, [pts], color)
+    cv2.polylines(canvas, [pts], True, (255, 255, 255), 1)
+
+    # 3. Racing Stripes (two thin stripes)
+    stripe_c = (255, 255, 255) if color != (255, 255, 255) else (50, 50, 50)
+    cv2.rectangle(canvas, (cx - 4, y1 + 2), (cx - 1, y2 - 2), stripe_c, -1)
+    cv2.rectangle(canvas, (cx + 1, y1 + 2), (cx + 4, y2 - 2), stripe_c, -1)
+
+    # 4. Windshield & Cockpit (glass with reflections)
+    windshield_pts = np.array([
+        [cx - 12, y1 + 22],
+        [cx + 12, y1 + 22],
+        [cx + 15, y1 + 36],
+        [cx - 15, y1 + 36]
+    ], np.int32)
+    cv2.fillPoly(canvas, [windshield_pts], (90, 60, 40))
+    cv2.polylines(canvas, [windshield_pts], True, (150, 150, 150), 1)
+    cv2.line(canvas, (cx - 8, y1 + 26), (cx + 4, y1 + 34), (255, 255, 200), 2)
+
+    # Rear window
+    rear_win_pts = np.array([
+        [cx - 13, y1 + 46],
+        [cx + 13, y1 + 46],
+        [cx + 11, y1 + 60],
+        [cx - 11, y1 + 60]
+    ], np.int32)
+    cv2.fillPoly(canvas, [rear_win_pts], (90, 60, 40))
+    cv2.polylines(canvas, [rear_win_pts], True, (150, 150, 150), 1)
+
+    # 5. Rear Spoiler (Wing)
+    cv2.rectangle(canvas, (x1 + 3, y2 - 5), (x2 - 3, y2 - 2), (30, 30, 30), -1)
+    cv2.rectangle(canvas, (x1 + 1, y2 - 6), (x1 + 4, y2 - 1), (30, 30, 30), -1)
+    cv2.rectangle(canvas, (x2 - 4, y2 - 6), (x2 - 1, y2 - 1), (30, 30, 30), -1)
+
+    # 6. Lights
+    if is_player:
+        # Headlights glow (projecting yellow beams forward!)
+        glow = canvas.copy()
+        left_beam = np.array([[cx - 14, y1], [cx - 60, y1 - 100], [cx + 10, y1 - 100]], np.int32)
+        cv2.fillPoly(glow, [left_beam], (150, 255, 255))
+        right_beam = np.array([[cx + 14, y1], [cx - 10, y1 - 100], [cx + 60, y1 - 100]], np.int32)
+        cv2.fillPoly(glow, [right_beam], (150, 255, 255))
+        cv2.addWeighted(glow, 0.2, canvas, 0.8, 0, canvas)
+        
+        # Yellow bulbs
+        cv2.circle(canvas, (cx - 12, y1 + 2), 3, (0, 255, 255), -1)
+        cv2.circle(canvas, (cx + 12, y1 + 2), 3, (0, 255, 255), -1)
+        
+        # Red tail lights
+        cv2.rectangle(canvas, (x1 + 5, y2 - 1), (x1 + 11, y2 + 1), (0, 0, 255), -1)
+        cv2.rectangle(canvas, (x2 - 11, y2 - 1), (x2 - 5, y2 + 1), (0, 0, 255), -1)
+    else:
+        # Red brake lights
+        cv2.rectangle(canvas, (x1 + 5, y2 - 1), (x1 + 10, y2 + 1), (0, 0, 200), -1)
+        cv2.rectangle(canvas, (x2 - 10, y2 - 1), (x2 - 5, y2 + 1), (0, 0, 200), -1)
 
 
 def draw_game_canvas():
@@ -340,7 +403,7 @@ def draw_game_canvas():
         draw_car(canvas, ob["x"], ob["y"], ob["color"])
 
     # Draw player car
-    draw_car(canvas, int(player_x), player_y, (255, 0, 0))  # Blue player car
+    draw_car(canvas, int(player_x), player_y, (255, 0, 0), is_player=True)  # Blue player car
 
     # Draw HUD glass panel
     g_panel_w, g_panel_h = 240, 75
